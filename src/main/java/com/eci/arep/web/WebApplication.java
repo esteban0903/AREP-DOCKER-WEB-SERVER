@@ -9,6 +9,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -23,18 +24,31 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class WebApplication {
 
     private static final int DEFAULT_PORT = 35000;
     private static final String DEFAULT_SCAN_PACKAGE = "com.eci.arep.web";
+    private static final int WORKER_THREADS = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
 
     private static final Map<String, RouteHandler> routes = new HashMap<>();
+    private static final ExecutorService workerPool = Executors.newFixedThreadPool(WORKER_THREADS);
+    private static final AtomicBoolean shuttingDown = new AtomicBoolean(false);
+    private static volatile ServerSocket serverSocket;
 
     public static void main(String[] args) throws Exception {
         AppConfig config = parseArgs(args);
+        registerShutdownHook();
         bootstrapControllers(config);
         startHttpServer(config.port);
+    }
+
+    private static void registerShutdownHook() {
+        Runtime.getRuntime().addShutdownHook(new Thread(WebApplication::shutdownGracefully, "webapp-shutdown"));
     }
 
     private static AppConfig parseArgs(String[] args) {
@@ -137,13 +151,49 @@ public class WebApplication {
     }
 
     private static void startHttpServer(int port) throws IOException {
-        try (ServerSocket serverSocket = new ServerSocket(port)) {
+        try (ServerSocket socket = new ServerSocket(port)) {
+            serverSocket = socket;
             System.out.println("Micro server listening at http://localhost:" + port);
 
-            while (true) {
-                Socket clientSocket = serverSocket.accept();
-                handleClient(clientSocket);
+            while (!shuttingDown.get()) {
+                try {
+                    Socket clientSocket = socket.accept();
+                    workerPool.submit(() -> handleClient(clientSocket));
+                } catch (SocketException socketException) {
+                    if (!shuttingDown.get()) {
+                        throw socketException;
+                    }
+                }
             }
+        } finally {
+            shutdownWorkerPool();
+        }
+    }
+
+    private static void shutdownGracefully() {
+        if (!shuttingDown.compareAndSet(false, true)) {
+            return;
+        }
+
+        try {
+            if (serverSocket != null && !serverSocket.isClosed()) {
+                serverSocket.close();
+            }
+        } catch (IOException ignored) {
+        }
+
+        shutdownWorkerPool();
+    }
+
+    private static void shutdownWorkerPool() {
+        workerPool.shutdown();
+        try {
+            if (!workerPool.awaitTermination(5, TimeUnit.SECONDS)) {
+                workerPool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            workerPool.shutdownNow();
+            Thread.currentThread().interrupt();
         }
     }
 

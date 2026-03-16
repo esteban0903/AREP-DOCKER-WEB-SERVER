@@ -131,8 +131,35 @@ Instancia en estado running:
 
 ![Instance Running](images/instance-running.png)
 
-## Información del Proyecto
+---
 
-- Autor: Esteban Aguilera Contreras
-- Universidad: Escuela Colombiana de Ingeniería Julio Garavito
-- Asignatura: Arquitecturas Empresariales (AREP)
+## Requisitos Técnicos
+
+### Soporte de solicitudes concurrentes
+
+El servidor procesa conexiones de manera concurrente mediante un pool de hilos fijo (`ExecutorService`), permitiendo atender multiples clientes al mismo tiempo sin bloquear el ciclo principal de aceptacion de sockets.
+
+### Apagado elegante (graceful shutdown)
+
+Se implementa un hook de runtime (`Runtime.getRuntime().addShutdownHook(...)`) que:
+
+1. Marca el servidor en estado de apagado.
+2. Cierra el `ServerSocket` de forma controlada.
+3. Detiene el pool de workers esperando su finalizacion (`awaitTermination`) y forzando cierre si es necesario.
+
+---
+
+## Evidencia de Pruebas Automatizadas
+
+Comando ejecutado:
+
+```bash
+mvn test
+```
+
+Resultado:
+
+```text
+Tests run: 6, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
